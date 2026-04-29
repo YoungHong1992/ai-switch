@@ -67,7 +67,7 @@ name = "ai-switch"
 version = "0.1.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
-description = "Claude Code 配置切换工具，类 cc-switch，但用 settings.json 作 profile，零 lock-in"
+description = "Claude Code 配置切换工具：profile = 标准 settings.json 文件，零 lock-in"
 repository = "https://github.com/YoungHong1992/ai-switch"
 
 [[bin]]
@@ -135,7 +135,7 @@ fn main() {
 ```markdown
 # ai-switch
 
-Claude Code 配置切换工具，类 [cc-switch](https://github.com/farion1231/cc-switch)，但 profile 单元 = 标准 Claude Code `settings.json` 文件，零 lock-in。
+Claude Code 配置切换工具：profile 单元 = 标准 Claude Code `settings.json` 文件，零 lock-in。
 
 详见 [docs/superpowers/specs/2026-04-29-ai-switch-design.md](docs/superpowers/specs/2026-04-29-ai-switch-design.md)。
 ```

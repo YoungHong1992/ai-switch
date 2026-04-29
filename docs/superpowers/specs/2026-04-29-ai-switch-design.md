@@ -9,9 +9,9 @@
 
 ## 1. 概述
 
-ai-switch（命令名 `ais`）是一个 **Claude Code 配置切换工具**，定位类 [cc-switch](https://github.com/farion1231/cc-switch)，但与之有两点关键差异：
+ai-switch（命令名 `ais`）是一个 **Claude Code 配置切换工具**。其核心特征有两点：
 
-- **profile 单元 = 标准 Claude Code `settings.json` 文件**（cc-switch 改写全局 `~/.claude/settings.json`；ais 通过 `claude --settings <path>` 把切换显式化）
+- **profile 单元 = 标准 Claude Code `settings.json` 文件**：每个 profile 就是一份独立、自包含、可单独使用的 settings.json；ais 通过 `claude --settings <path>` 显式启动而**不**改写用户的全局 `~/.claude/settings.json`
 - **零 lock-in**：用户随时可以拿任意生成的 `settings_xxx.json` 脱离 ais 直接 `claude --settings xxx.json` 跑
 
 **V1 范围**：只服务 Claude Code CLI。**架构预留多工具扩展**——磁盘布局、provider/credentials 抽象都按"未来 codex/cursor/aider 一起管理"的方向设计，但 V1 不实现非 Claude 工具的实际接入。
@@ -33,7 +33,7 @@ ai-switch（命令名 `ais`）是一个 **Claude Code 配置切换工具**，定
 **非目标**：
 - 团队共享 profile（同一份 profile 多人协作）
 - 多设备自动同步（用户可手动用 git）
-- 多 LLM 工具（V1 只 Claude，V2 才考虑 codex/cursor/aider）
+- 多 AI Coding Agent 工具（V1 只 Claude，V2 才考虑 codex/cursor/aider）
 
 ---
 
