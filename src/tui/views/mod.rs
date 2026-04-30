@@ -1,1 +1,5 @@
-//! 各 view 子模块声明（Task 6/9/10/11/15 逐个补齐）
+pub mod doctor;
+pub mod keys;
+pub mod profiles;
+pub mod providers;
+pub mod wizard;
