@@ -158,6 +158,35 @@ pub fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
         .split(popup_layout[1])[1]
 }
 
+pub fn draw_help(frame: &mut Frame<'_>, area: Rect) {
+    let popup = centered_rect(70, 70, area);
+    frame.render_widget(Clear, popup);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title("Help — ai-switch".to_string());
+    let body = "\
+Profiles 主视图:
+  ↑↓ / j k       move
+  Enter           launch selected profile
+  n               new profile (wizard)
+  e               edit selected (re-run wizard, name locked)
+  r               rename selected
+  x               delete selected (confirm with y)
+  p               providers panel
+  K               keys panel
+  d               doctor panel
+  ?               toggle this help
+  q / Esc         quit
+
+向导内:
+  Tab / Shift-Tab next/prev step
+  Enter           accept / next
+  Esc             back / cancel
+";
+    let para = Paragraph::new(body).block(block).wrap(Wrap { trim: false });
+    frame.render_widget(para, popup);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

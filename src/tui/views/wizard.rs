@@ -18,3 +18,10 @@ impl State {
 }
 
 pub fn handle_key(_app: &mut App, _k: KeyEvent) {}
+
+pub fn draw(
+    _frame: &mut ratatui::Frame<'_>,
+    _area: ratatui::layout::Rect,
+    _app: &crate::tui::app::App,
+) {
+}
