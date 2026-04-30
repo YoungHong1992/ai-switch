@@ -95,6 +95,9 @@ mod tests {
     #[test]
     fn build_args_with_no_passthrough() {
         let args = build_args(&PathBuf::from("/x/s.json"), &[]);
-        assert_eq!(args, vec!["--settings".to_string(), "/x/s.json".to_string()]);
+        assert_eq!(
+            args,
+            vec!["--settings".to_string(), "/x/s.json".to_string()]
+        );
     }
 }

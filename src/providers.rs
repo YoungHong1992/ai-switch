@@ -31,7 +31,7 @@ fn parse_user_file(path: &Path) -> Result<BTreeMap<String, UserProvider>, Error>
     })?;
     toml::from_str(&s).map_err(|e| Error::ProvidersCorrupted {
         path: path.to_path_buf(),
-        source: e,
+        source: Box::new(e),
     })
 }
 
@@ -63,7 +63,9 @@ pub fn load_all(user_providers_path: &Path) -> Result<Vec<Provider>, Error> {
 
 /// Convenience: find a provider by id, considering user overrides.
 pub fn find(user_providers_path: &Path, id: &str) -> Result<Option<Provider>, Error> {
-    Ok(load_all(user_providers_path)?.into_iter().find(|p| p.id == id))
+    Ok(load_all(user_providers_path)?
+        .into_iter()
+        .find(|p| p.id == id))
 }
 
 #[cfg(test)]

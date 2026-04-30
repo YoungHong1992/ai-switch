@@ -34,7 +34,7 @@ impl Index {
         })?;
         toml::from_str(&s).map_err(|e| Error::IndexCorrupted {
             path: path.to_path_buf(),
-            source: e,
+            source: Box::new(e),
         })
     }
 
@@ -47,7 +47,7 @@ impl Index {
         }
         let s = toml::to_string_pretty(self).map_err(|e| Error::Io {
             path: path.to_path_buf(),
-            source: std::io::Error::new(std::io::ErrorKind::Other, e.to_string()),
+            source: std::io::Error::other(e.to_string()),
         })?;
         fs::write(path, s).map_err(|e| Error::Io {
             path: path.to_path_buf(),
@@ -117,11 +117,7 @@ pub fn create(paths: &Paths, input: CreateInput) -> Result<(), Error> {
         source: e,
     })?;
 
-    let settings = Settings::render(
-        input.anthropic_base_url,
-        input.api_key_value,
-        input.model,
-    );
+    let settings = Settings::render(input.anthropic_base_url, input.api_key_value, input.model);
     settings.save(&paths.settings_for(input.name))?;
 
     let mut index = Index::load(&paths.claude_index())?;
@@ -302,18 +298,42 @@ mod tests {
         let root = TempRoot(temp_root());
         let paths = Paths::with_root(root.0.join("ais"));
 
-        create(&paths, CreateInput {
-            name: "p1", provider_id: "deepseek", key_id: "sk-a...fswv",
-            model: "deepseek-chat", anthropic_base_url: "u1", api_key_value: "old-key",
-        }).unwrap();
-        create(&paths, CreateInput {
-            name: "p2", provider_id: "deepseek", key_id: "sk-a...fswv",
-            model: "deepseek-coder", anthropic_base_url: "u1", api_key_value: "old-key",
-        }).unwrap();
-        create(&paths, CreateInput {
-            name: "p3", provider_id: "deepseek", key_id: "sk-b...gwzh",
-            model: "deepseek-chat", anthropic_base_url: "u1", api_key_value: "other-key",
-        }).unwrap();
+        create(
+            &paths,
+            CreateInput {
+                name: "p1",
+                provider_id: "deepseek",
+                key_id: "sk-a...fswv",
+                model: "deepseek-chat",
+                anthropic_base_url: "u1",
+                api_key_value: "old-key",
+            },
+        )
+        .unwrap();
+        create(
+            &paths,
+            CreateInput {
+                name: "p2",
+                provider_id: "deepseek",
+                key_id: "sk-a...fswv",
+                model: "deepseek-coder",
+                anthropic_base_url: "u1",
+                api_key_value: "old-key",
+            },
+        )
+        .unwrap();
+        create(
+            &paths,
+            CreateInput {
+                name: "p3",
+                provider_id: "deepseek",
+                key_id: "sk-b...gwzh",
+                model: "deepseek-chat",
+                anthropic_base_url: "u1",
+                api_key_value: "other-key",
+            },
+        )
+        .unwrap();
 
         let affected = rotate_key(&paths, "deepseek", "sk-a...fswv", "new-key").unwrap();
         assert_eq!(affected, vec!["p1".to_string(), "p2".to_string()]);
@@ -337,14 +357,30 @@ mod tests {
         let root = TempRoot(temp_root());
         let paths = Paths::with_root(root.0.join("ais"));
 
-        create(&paths, CreateInput {
-            name: "p1", provider_id: "deepseek", key_id: "sk-a...fswv",
-            model: "deepseek-chat", anthropic_base_url: "u", api_key_value: "v",
-        }).unwrap();
-        create(&paths, CreateInput {
-            name: "p2", provider_id: "openrouter", key_id: "sk-a...fswv",
-            model: "any", anthropic_base_url: "u", api_key_value: "v",
-        }).unwrap();
+        create(
+            &paths,
+            CreateInput {
+                name: "p1",
+                provider_id: "deepseek",
+                key_id: "sk-a...fswv",
+                model: "deepseek-chat",
+                anthropic_base_url: "u",
+                api_key_value: "v",
+            },
+        )
+        .unwrap();
+        create(
+            &paths,
+            CreateInput {
+                name: "p2",
+                provider_id: "openrouter",
+                key_id: "sk-a...fswv",
+                model: "any",
+                anthropic_base_url: "u",
+                api_key_value: "v",
+            },
+        )
+        .unwrap();
 
         rename_key_id_in_index(&paths, "deepseek", "sk-a...fswv", "sk-aa...fswvv").unwrap();
         let idx = Index::load(&paths.claude_index()).unwrap();

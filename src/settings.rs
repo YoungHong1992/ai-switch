@@ -91,7 +91,10 @@ mod tests {
             "sk-aaa",
             "deepseek-chat",
         );
-        assert_eq!(s.env["ANTHROPIC_BASE_URL"], "https://api.deepseek.com/anthropic");
+        assert_eq!(
+            s.env["ANTHROPIC_BASE_URL"],
+            "https://api.deepseek.com/anthropic"
+        );
         assert_eq!(s.env["ANTHROPIC_API_KEY"], "sk-aaa");
         assert_eq!(s.env["ANTHROPIC_MODEL"], "deepseek-chat");
         assert!(s.extras.is_empty());

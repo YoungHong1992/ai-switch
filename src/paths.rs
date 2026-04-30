@@ -46,7 +46,10 @@ mod tests {
     #[test]
     fn paths_resolve_relative_to_root() {
         let p = Paths::with_root(PathBuf::from("/tmp/test-ais"));
-        assert_eq!(p.credentials(), PathBuf::from("/tmp/test-ais/credentials.toml"));
+        assert_eq!(
+            p.credentials(),
+            PathBuf::from("/tmp/test-ais/credentials.toml")
+        );
         assert_eq!(p.providers(), PathBuf::from("/tmp/test-ais/providers.toml"));
         assert_eq!(p.claude_dir(), PathBuf::from("/tmp/test-ais/claude"));
         assert_eq!(

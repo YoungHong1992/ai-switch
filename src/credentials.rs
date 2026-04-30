@@ -157,7 +157,7 @@ pub fn load(path: &Path) -> Result<Store, Error> {
     })?;
     toml::from_str(&s).map_err(|e| Error::CredentialsCorrupted {
         path: path.to_path_buf(),
-        source: e,
+        source: Box::new(e),
     })
 }
 
@@ -170,7 +170,7 @@ pub fn save(path: &Path, store: &Store) -> Result<(), Error> {
     }
     let serialized = toml::to_string_pretty(store).map_err(|e| Error::Io {
         path: path.to_path_buf(),
-        source: std::io::Error::new(std::io::ErrorKind::Other, e.to_string()),
+        source: std::io::Error::other(e.to_string()),
     })?;
     fs::write(path, serialized).map_err(|e| Error::Io {
         path: path.to_path_buf(),

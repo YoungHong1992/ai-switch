@@ -35,7 +35,9 @@ fn main() -> ExitCode {
     match cli.cmd {
         None => {
             // 裸跑 `ais`：Plan B 接管 TUI；Plan A 期间打印帮助并退出 0。
-            eprintln!("ais: TUI not yet available (Plan A only). Use `ais claude <name>` to launch.");
+            eprintln!(
+                "ais: TUI not yet available (Plan A only). Use `ais claude <name>` to launch."
+            );
             ExitCode::from(0)
         }
         Some(Cmd::Claude { name, passthrough }) => match run_claude(&name, &passthrough) {

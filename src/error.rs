@@ -25,21 +25,21 @@ pub enum Error {
     CredentialsCorrupted {
         path: PathBuf,
         #[source]
-        source: toml::de::Error,
+        source: Box<toml::de::Error>,
     },
 
     #[error("providers.toml at {path} is corrupted: {source}")]
     ProvidersCorrupted {
         path: PathBuf,
         #[source]
-        source: toml::de::Error,
+        source: Box<toml::de::Error>,
     },
 
     #[error(".ais-index.toml at {path} is corrupted: {source}")]
     IndexCorrupted {
         path: PathBuf,
         #[source]
-        source: toml::de::Error,
+        source: Box<toml::de::Error>,
     },
 
     #[error("key id `{id}` already exists for provider `{provider}`")]
