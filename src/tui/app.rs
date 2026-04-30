@@ -24,7 +24,10 @@ pub enum Mode {
     Providers(super::views::providers::State),
     Keys(super::views::keys::State),
     Doctor(super::views::doctor::State),
-    Wizard(super::views::wizard::State),
+    /// Boxed: `wizard::State` 持有多张 `ListState` + `InputField` + `Provider`，
+    /// 直接放进 `Mode` 会触发 `clippy::large_enum_variant`（参见 keys.rs 注释中
+    /// 同套手法）。Box 后 Mode 体积稳定，访问端通过 `Deref` 自动取到字段。
+    Wizard(Box<super::views::wizard::State>),
     Help,
 }
 
