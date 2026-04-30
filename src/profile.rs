@@ -107,8 +107,14 @@ pub struct CreateInput<'a> {
     pub api_key_value: &'a str,
 }
 
-/// Create a new profile: write settings_<name>.json + add index entry.
-/// Caller is responsible for ensuring (provider, key) already exist in credentials store.
+/// Create a new profile: 写 settings_<name>.json + 追加索引项。
+///
+/// 事务语义（spec §7 Step 5）：
+/// 1. 校验 name；
+/// 2. 准备好 Settings 与 IndexEntry（不落盘）；
+/// 3. 加载现有索引；新条目会冲掉同名旧条目，但需检测（重名应在调用方处理，本函数允许覆盖）；
+/// 4. 先写 settings.json；
+/// 5. 再写 index.toml；若 index 写失败，删除已写的 settings.json 后返回错误。
 pub fn create(paths: &Paths, input: CreateInput) -> Result<(), Error> {
     validate_name(input.name)?;
 
@@ -118,20 +124,37 @@ pub fn create(paths: &Paths, input: CreateInput) -> Result<(), Error> {
     })?;
 
     let settings = Settings::render(input.anthropic_base_url, input.api_key_value, input.model);
-    settings.save(&paths.settings_for(input.name))?;
+    let settings_path = paths.settings_for(input.name);
 
-    let mut index = Index::load(&paths.claude_index())?;
-    index.entries.insert(
-        input.name.into(),
-        IndexEntry {
-            provider: input.provider_id.into(),
-            key_id: input.key_id.into(),
-            model: input.model.into(),
-            created_at: Utc::now(),
-        },
-    );
-    index.save(&paths.claude_index())?;
+    // 备份"原 settings 是否存在"信号，回滚时只删我们刚刚写出的版本。
+    let preexisting = settings_path.exists();
+    settings.save(&settings_path)?;
 
+    let mut index = match Index::load(&paths.claude_index()) {
+        Ok(i) => i,
+        Err(e) => {
+            // index 加载失败：回滚 settings 写入（仅当我们刚刚新建时）
+            if !preexisting {
+                let _ = fs::remove_file(&settings_path);
+            }
+            return Err(e);
+        }
+    };
+    let entry = IndexEntry {
+        provider: input.provider_id.into(),
+        key_id: input.key_id.into(),
+        model: input.model.into(),
+        created_at: Utc::now(),
+    };
+    index.entries.insert(input.name.into(), entry);
+
+    if let Err(e) = index.save(&paths.claude_index()) {
+        // index 写盘失败：回滚 settings.json
+        if !preexisting {
+            let _ = fs::remove_file(&settings_path);
+        }
+        return Err(e);
+    }
     Ok(())
 }
 
@@ -386,5 +409,40 @@ mod tests {
         let idx = Index::load(&paths.claude_index()).unwrap();
         assert_eq!(idx.entries["p1"].key_id, "sk-aa...fswvv");
         assert_eq!(idx.entries["p2"].key_id, "sk-a...fswv");
+    }
+
+    #[test]
+    fn create_rolls_back_settings_when_index_save_fails() {
+        // 模拟 index 写盘失败：把 claude_dir 下提前放一个**目录**叫 .ais-index.toml，
+        // 这样后续 fs::write 就会因 IsADirectory 失败。
+        let root = TempRoot(temp_root());
+        let paths = Paths::with_root(root.0.join("ais"));
+        fs::create_dir_all(paths.claude_dir()).unwrap();
+        // 这一行制造写失败：把索引文件占成目录
+        fs::create_dir_all(paths.claude_index()).unwrap();
+
+        let result = create(
+            &paths,
+            CreateInput {
+                name: "boom",
+                provider_id: "deepseek",
+                key_id: "sk-a...fswv",
+                model: "deepseek-chat",
+                anthropic_base_url: "u",
+                api_key_value: "v",
+            },
+        );
+        assert!(
+            result.is_err(),
+            "expected create() to fail when index path is a dir"
+        );
+
+        // 回滚断言：settings.json 不应该残留
+        let settings_path = paths.settings_for("boom");
+        assert!(
+            !settings_path.exists(),
+            "expected settings.json to be rolled back; found at {}",
+            settings_path.display()
+        );
     }
 }
