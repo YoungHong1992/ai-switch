@@ -8,7 +8,15 @@ pub struct Paths {
 }
 
 impl Paths {
+    /// 解析配置 root：
+    /// 1. 若环境变量 `AIS_HOME` 非空，直接作为 root（用于测试与高级用户自定义路径）
+    /// 2. 否则使用 `directories::BaseDirs` 推导出的 `<home>/.ai-switch`
     pub fn from_home() -> Result<Self, Error> {
+        if let Some(raw) = std::env::var_os("AIS_HOME")
+            && !raw.is_empty()
+        {
+            return Ok(Self::with_root(PathBuf::from(raw)));
+        }
         let dirs = directories::BaseDirs::new().ok_or(Error::HomeDirNotFound)?;
         Ok(Self::with_root(dirs.home_dir().join(".ai-switch")))
     }

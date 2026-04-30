@@ -3,6 +3,9 @@
 //! 不依赖真实 `claude` 二进制存在；只覆盖：
 //! - profile 不存在 → exit 1，stderr 含特定错误
 //! - profile 存在但 PATH 上无 claude → exit 1，stderr 含 "claude not in PATH"
+//!
+//! 通过 `AIS_HOME` 环境变量将配置 root 重定向到临时目录，使测试在
+//! Linux/macOS/Windows 上行为一致（不依赖各平台 home dir 解析的差异）。
 
 use std::fs;
 use std::path::PathBuf;
@@ -42,14 +45,13 @@ impl Drop for TempRoot {
 #[test]
 fn nonexistent_profile_yields_exit_1_and_stderr_message() {
     let root = TempRoot(temp_root("missing"));
-    let home = root.0.join("home");
-    fs::create_dir_all(&home).unwrap();
+    let ais_home = root.0.join(".ai-switch");
+    fs::create_dir_all(&ais_home).unwrap();
 
     let output = Command::new(cargo_bin())
         .arg("claude")
         .arg("definitely-not-a-profile-xxxxxxx")
-        .env("HOME", &home)
-        .env("USERPROFILE", &home) // Windows
+        .env("AIS_HOME", &ais_home)
         .output()
         .expect("ais binary should be runnable");
 
@@ -64,11 +66,11 @@ fn nonexistent_profile_yields_exit_1_and_stderr_message() {
 #[test]
 fn existing_profile_but_no_claude_in_path_yields_exit_1() {
     let root = TempRoot(temp_root("noclaude"));
-    let home = root.0.join("home");
-    fs::create_dir_all(&home).unwrap();
+    let ais_home = root.0.join(".ai-switch");
+    fs::create_dir_all(&ais_home).unwrap();
 
-    // Build a minimal profile under <home>/.ai-switch/claude/settings_p1.json
-    let paths = Paths::with_root(home.join(".ai-switch"));
+    // Build a minimal profile under <ais_home>/claude/settings_p1.json
+    let paths = Paths::with_root(ais_home.clone());
     profile::create(
         &paths,
         CreateInput {
@@ -85,8 +87,7 @@ fn existing_profile_but_no_claude_in_path_yields_exit_1() {
     let output = Command::new(cargo_bin())
         .arg("claude")
         .arg("p1")
-        .env("HOME", &home)
-        .env("USERPROFILE", &home)
+        .env("AIS_HOME", &ais_home)
         .env("PATH", "") // 强制 which::which("claude") 失败
         .output()
         .expect("ais binary should be runnable");
