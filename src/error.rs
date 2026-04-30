@@ -60,6 +60,12 @@ pub enum Error {
     #[error("key value too short to derive id automatically (need >=12 chars, got {len})")]
     KeyValueTooShortForAutoId { len: usize },
 
+    #[error("http fetch failed: {url}: {message}")]
+    HttpFetch { url: String, message: String },
+
+    #[error("http response is not valid JSON ({url}): {message}")]
+    HttpJson { url: String, message: String },
+
     #[error("io error at {path}: {source}")]
     Io {
         path: PathBuf,
