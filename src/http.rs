@@ -40,7 +40,7 @@ pub fn fetch_models(
     let url = build_url(base_url, endpoint_path);
     let agent = ureq::AgentBuilder::new().timeout(DEFAULT_TIMEOUT).build();
     let mut req = agent.get(&url);
-    if let Some(token) = bearer {
+    if let Some(token) = bearer.filter(|t| !t.is_empty()) {
         req = req.set("Authorization", &format!("Bearer {token}"));
     }
     let resp = req.call().map_err(|e| Error::HttpFetch {
@@ -86,6 +86,16 @@ mod tests {
         assert_eq!(
             build_url("https://api.example.com/v1", "models"),
             "https://api.example.com/v1/models"
+        );
+    }
+
+    #[test]
+    fn build_url_handles_empty_endpoint() {
+        // 空 endpoint 退化为 base + "/" — 由 ureq 报"unsupported method/url"，
+        // 但本测试只关心 build_url 自身行为：尾斜杠规范化。
+        assert_eq!(
+            build_url("https://api.example.com/v1/", ""),
+            "https://api.example.com/v1/"
         );
     }
 
