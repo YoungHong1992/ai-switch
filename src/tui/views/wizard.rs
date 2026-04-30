@@ -2,8 +2,9 @@
 //!
 //! 5 步状态机：选 provider → 选 key → 选 model → 起名 → preview & commit。
 //! 内联子流程（add-provider / add-key）在 Task 13 接入；本 task 末位
-//! "+ 添加新 ..." 仅 toast 提示。模型拉取在 Task 12 接入；本 task step 3
-//! 简化为自由输入 InputField。
+//! "+ 添加新 ..." 仅 toast 提示。Step 3 在 Task 12 接入：进入时同步拉
+//! `/v1/models`（5s 超时），成功 → 列表选择，失败/空/无 base URL → 回退
+//! 到自由输入子状态。
 //!
 //! 借用形态（与 providers.rs / keys.rs 一致）：
 //! - `handle_key` 先读 `app.mode` 拿到当前 step，再分派到对应 handler。
@@ -18,11 +19,13 @@
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
-use ratatui::style::{Modifier, Style};
+use ratatui::style::{Color, Modifier, Style};
+use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap};
 
 use crate::catalog::Provider;
 use crate::error::Error;
+use crate::http;
 use crate::profile::{self, CreateInput};
 use crate::settings::Settings;
 use crate::tui::app::{App, Mode};
@@ -45,6 +48,13 @@ pub struct State {
     pub key_list: ListState,
     pub model_input: InputField,
     pub name_input: InputField,
+    /// Step 3 模型列表（成功 fetch 后填充；空表示尚未拉/失败/空）。
+    pub model_list: ListState,
+    pub model_choices: Vec<String>,
+    /// 进入 Step::Model 时已尝试过一次 fetch（仅观察用，避免重复拉）。
+    pub model_fetch_attempted: bool,
+    /// 用户选了"+ 自定义..." 或 fetch 失败/空 → 走自由输入子状态。
+    pub model_use_custom: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -62,6 +72,8 @@ impl Default for State {
         provider_list.select(Some(0));
         let mut key_list = ListState::default();
         key_list.select(Some(0));
+        let mut model_list = ListState::default();
+        model_list.select(Some(0));
         Self {
             step: Step::Provider,
             locked_name: None,
@@ -73,6 +85,10 @@ impl Default for State {
             key_list,
             model_input: InputField::new("model").with_max_len(128),
             name_input: InputField::new("name").with_max_len(64),
+            model_list,
+            model_choices: Vec::new(),
+            model_fetch_attempted: false,
+            model_use_custom: false,
         }
     }
 }
@@ -238,10 +254,37 @@ fn handle_step_key(app: &mut App, k: KeyEvent) {
         KeyCode::Enter => {
             if selected < keys.len() {
                 let (kid, val) = keys[selected].clone();
-                if let Mode::Wizard(state) = &mut app.mode {
-                    state.picked_key_id = Some(kid);
-                    state.picked_key_value = Some(val);
-                    state.step = Step::Model;
+                // 第一次可变借用：写入 picked_key_* + 切 step + 重置 model 列表状态，
+                // 再把 fetch 所需 (provider, bearer) snapshot 出来供作用域外使用。
+                let fetch_target: Option<(Provider, String)> =
+                    if let Mode::Wizard(state) = &mut app.mode {
+                        state.picked_key_id = Some(kid);
+                        state.picked_key_value = Some(val.clone());
+                        state.step = Step::Model;
+                        state.model_choices.clear();
+                        state.model_fetch_attempted = false;
+                        state.model_use_custom = false;
+                        state.model_list.select(Some(0));
+                        state.picked_provider.clone().map(|p| (p, val))
+                    } else {
+                        None
+                    };
+
+                // 借用已释放，可以做同步 5s HTTP（spec §16 接受 UI 短暂 freeze）。
+                // 失败 / 空列表 / openai_base_url 缺失 → use_custom = true 回退自由输入。
+                if let Some((provider, bearer)) = fetch_target {
+                    let result = http::fetch_models(
+                        provider.openai_base_url.as_deref().unwrap_or(""),
+                        &provider.models_endpoint_path,
+                        Some(bearer.as_str()),
+                    );
+                    if let Mode::Wizard(state) = &mut app.mode {
+                        match result {
+                            Ok(list) if !list.is_empty() => state.model_choices = list,
+                            _ => state.model_use_custom = true,
+                        }
+                        state.model_fetch_attempted = true;
+                    }
                 }
             } else {
                 app.set_toast(Toast::info("add-key 子流程将在 Task 13 接入"));
@@ -251,12 +294,10 @@ fn handle_step_key(app: &mut App, k: KeyEvent) {
     }
 }
 
-/// step 3 内部短借用产物：用来跨借用边界传递动作。
+/// step 3 内部短借用产物：用来跨借用边界传递 toast 触发。
 enum ModelOutcome {
     Stay,
-    Back,
     EmptyModel,
-    Commit(String),
 }
 
 fn handle_step_model(app: &mut App, k: KeyEvent) {
@@ -264,52 +305,76 @@ fn handle_step_model(app: &mut App, k: KeyEvent) {
         let Mode::Wizard(state) = &mut app.mode else {
             return;
         };
-        match k.code {
-            KeyCode::Esc => ModelOutcome::Back,
-            KeyCode::Backspace => {
-                state.model_input.pop();
-                ModelOutcome::Stay
-            }
-            KeyCode::Char(c) => {
-                state.model_input.push(c);
-                ModelOutcome::Stay
-            }
-            KeyCode::Enter => {
-                let m = state.model_input.value().trim().to_string();
-                if m.is_empty() {
-                    ModelOutcome::EmptyModel
-                } else {
-                    ModelOutcome::Commit(m)
-                }
-            }
-            _ => ModelOutcome::Stay,
+        if state.model_use_custom {
+            handle_step_model_custom(state, k)
+        } else {
+            handle_step_model_list(state, k)
         }
     };
+    if let ModelOutcome::EmptyModel = outcome {
+        app.set_toast(Toast::error("model 不能为空"));
+    }
+}
 
-    match outcome {
-        ModelOutcome::Stay => {}
-        ModelOutcome::Back => {
-            if let Mode::Wizard(state) = &mut app.mode {
-                state.step = Step::Key;
+/// 自由输入子状态：fetch 失败 / 空 base / 用户主动选 "+ 自定义..." 后落到这里。
+fn handle_step_model_custom(state: &mut State, k: KeyEvent) -> ModelOutcome {
+    match k.code {
+        KeyCode::Esc => state.step = Step::Key,
+        KeyCode::Backspace => state.model_input.pop(),
+        KeyCode::Enter => {
+            let m = state.model_input.value().trim().to_string();
+            if m.is_empty() {
+                return ModelOutcome::EmptyModel;
+            }
+            state.picked_model = Some(m);
+            advance_to_name(state);
+        }
+        KeyCode::Char(c) => state.model_input.push(c),
+        _ => {}
+    }
+    ModelOutcome::Stay
+}
+
+/// 列表子状态：选 fetch 到的某一项 → picked_model；选末位 "+ 自定义..." → 切自由输入。
+fn handle_step_model_list(state: &mut State, k: KeyEvent) -> ModelOutcome {
+    let n = state.model_choices.len();
+    match k.code {
+        KeyCode::Esc => state.step = Step::Key,
+        KeyCode::Down | KeyCode::Char('j') => {
+            let i = state.model_list.selected().unwrap_or(0);
+            // n（而非 n-1）：包含末位 "+ 自定义..." 项
+            state.model_list.select(Some((i + 1).min(n)));
+        }
+        KeyCode::Up | KeyCode::Char('k') => {
+            let i = state.model_list.selected().unwrap_or(0);
+            state.model_list.select(Some(i.saturating_sub(1)));
+        }
+        KeyCode::Enter => {
+            let i = state.model_list.selected().unwrap_or(0);
+            if i < n {
+                state.picked_model = Some(state.model_choices[i].clone());
+                advance_to_name(state);
+            } else {
+                state.model_use_custom = true;
             }
         }
-        ModelOutcome::EmptyModel => app.set_toast(Toast::error("model 不能为空")),
-        ModelOutcome::Commit(model) => {
-            if let Mode::Wizard(state) = &mut app.mode {
-                state.picked_model = Some(model.clone());
-                state.step = Step::Name;
-                // 仅当 name 既没锁定也没有任何已填值时，按 suggested_name 预填。
-                if state.locked_name.is_none()
-                    && state.name_input.value().is_empty()
-                    && let Some(p) = state.picked_provider.as_ref()
-                {
-                    let suggested = profile::suggested_name(&p.id, &model);
-                    state.name_input = InputField::new("name")
-                        .with_max_len(64)
-                        .with_initial(&suggested);
-                }
-            }
-        }
+        _ => {}
+    }
+    ModelOutcome::Stay
+}
+
+/// 切到 Step::Name；首次进入时按 picked_provider + picked_model 预填 name_input。
+/// 编辑模式下 locked_name 已设，跳过预填以避免覆盖锁定值。
+fn advance_to_name(state: &mut State) {
+    state.step = Step::Name;
+    if state.locked_name.is_some() || !state.name_input.value().is_empty() {
+        return;
+    }
+    if let (Some(p), Some(model)) = (state.picked_provider.as_ref(), state.picked_model.as_ref()) {
+        let suggested = profile::suggested_name(&p.id, model);
+        state.name_input = InputField::new("name")
+            .with_max_len(64)
+            .with_initial(&suggested);
     }
 }
 
@@ -554,12 +619,56 @@ fn draw_step_key(frame: &mut Frame<'_>, area: Rect, app: &App, state: &State) {
 }
 
 fn draw_step_model(frame: &mut Frame<'_>, area: Rect, state: &State) {
-    let p = state.model_input.render(true).block(
-        Block::default()
-            .borders(Borders::ALL)
-            .title("Step 3 / 5  Model（自由输入；Task 12 增强为自动拉取）"),
-    );
-    frame.render_widget(p, area);
+    if state.model_use_custom {
+        let lines = vec![
+            field_line(&state.model_input, true),
+            Line::from(""),
+            Line::from("（fetch 失败 / openai_base_url 缺失，转自由输入）"),
+        ];
+        let para = Paragraph::new(lines)
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title("Step 3 / 5  Model（自由输入）"),
+            )
+            .wrap(Wrap { trim: false });
+        frame.render_widget(para, area);
+        return;
+    }
+    let mut items: Vec<ListItem<'_>> = state
+        .model_choices
+        .iter()
+        .map(|m| ListItem::new(m.clone()))
+        .collect();
+    items.push(ListItem::new("+ 自定义..."));
+    let mut ls = state.model_list.clone();
+    let list = List::new(items)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title("Step 3 / 5  Model"),
+        )
+        .highlight_style(Style::default().add_modifier(Modifier::REVERSED));
+    frame.render_stateful_widget(list, area, &mut ls);
+}
+
+/// 同 keys.rs 的 field_line：把 InputField 渲染成单行（label + 值 + 光标）。
+/// 私有重复实现以避免在 widgets.rs 暴露内部细节；后续如有第三处复用再上提。
+fn field_line<'a>(field: &'a InputField, focused: bool) -> Line<'a> {
+    let display = if field.mask {
+        "*".repeat(field.buffer.chars().count())
+    } else {
+        field.buffer.clone()
+    };
+    let cursor = if focused { "_" } else { "" };
+    Line::from(vec![
+        Span::styled(
+            format!("{}: ", field.label),
+            Style::default().add_modifier(Modifier::BOLD),
+        ),
+        Span::raw(display),
+        Span::styled(cursor, Style::default().fg(Color::Yellow)),
+    ])
 }
 
 fn draw_step_name(frame: &mut Frame<'_>, area: Rect, state: &State) {
