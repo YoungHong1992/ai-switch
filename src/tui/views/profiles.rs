@@ -63,7 +63,7 @@ pub fn handle_key(app: &mut App, k: KeyEvent) {
             state.list.select(Some(i.saturating_sub(1)));
         }
         KeyCode::Char('p') => {
-            app.mode = Mode::Providers(crate::tui::views::providers::State);
+            app.mode = Mode::Providers(crate::tui::views::providers::State::default());
         }
         KeyCode::Char('K') => {
             app.mode = Mode::Keys(crate::tui::views::keys::State);
