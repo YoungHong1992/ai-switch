@@ -1,6 +1,6 @@
 use std::process::ExitCode;
 
-use ais::{claude, paths::Paths};
+use ais::{claude, paths::Paths, tui};
 use clap::Parser;
 
 #[derive(Debug, Parser)]
@@ -9,7 +9,7 @@ use clap::Parser;
     version,
     about = "Claude Code 配置切换工具",
     long_about = "ais — Claude Code 配置切换工具。\n\
-                  裸跑 `ais` 进入 TUI（Plan B 实现）；\n\
+                  裸跑 `ais` 进入 TUI；\n\
                   `ais claude <name>` 直接启动一个 profile 对应的 Claude Code。"
 )]
 struct Cli {
@@ -31,15 +31,15 @@ enum Cmd {
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
-
     match cli.cmd {
-        None => {
-            // 裸跑 `ais`：Plan B 接管 TUI；Plan A 期间打印帮助并退出 0。
-            eprintln!(
-                "ais: TUI not yet available (Plan A only). Use `ais claude <name>` to launch."
-            );
-            ExitCode::from(0)
-        }
+        None => match run_tui() {
+            Ok(0) => ExitCode::from(0),
+            Ok(code) => ExitCode::from(code as u8),
+            Err(e) => {
+                eprintln!("ais: {e}");
+                ExitCode::from(1)
+            }
+        },
         Some(Cmd::Claude { name, passthrough }) => match run_claude(&name, &passthrough) {
             Ok(code) => ExitCode::from(code as u8),
             Err(e) => {
@@ -50,14 +50,21 @@ fn main() -> ExitCode {
     }
 }
 
+/// TUI 路径：进入主视图；用户按 Enter 选定一个 profile 后，TUI 退出并把 name 返回，
+/// 这里再调 claude::launch（execvp on unix；windows spawn）。
+fn run_tui() -> ais::Result<i32> {
+    match tui::run()? {
+        None => Ok(0),
+        Some(name) => run_claude(&name, &[]),
+    }
+}
+
 fn run_claude(name: &str, passthrough: &[String]) -> ais::Result<i32> {
     let paths = Paths::from_home()?;
     let settings_path = paths.settings_for(name);
-
     if !settings_path.exists() {
         return Err(ais::Error::ProfileNotFound { name: name.into() });
     }
-
     let claude_path = claude::probe_path()?;
     claude::launch(&claude_path, &settings_path, passthrough)
 }
