@@ -109,7 +109,7 @@ pub fn handle_key(app: &mut App, k: KeyEvent) {
             app.mode = Mode::Keys(crate::tui::views::keys::State::default());
         }
         KeyCode::Char('d') => {
-            app.mode = Mode::Doctor(crate::tui::views::doctor::State);
+            app.mode = Mode::Doctor(crate::tui::views::doctor::State::default());
         }
         KeyCode::Char('n') => {
             app.mode = Mode::Wizard(Box::default());
