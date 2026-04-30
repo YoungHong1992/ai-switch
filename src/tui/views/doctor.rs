@@ -281,9 +281,20 @@ mod tests {
     }
 
     #[test]
-    fn root_writable_fails_for_nonexistent_parent() {
-        let p = std::path::Path::new("/this/path/should/not/exist/ais-test-xxx");
-        let item = check_root_writable(p);
+    fn root_writable_fails_when_parent_is_a_regular_file() {
+        // 跨平台构造：在临时目录里放一个普通文件作 "blocker"，让 root 指向该文件下的子路径。
+        // create_dir_all 在任何平台都无法在普通文件之下创建目录，必失败。
+        // 不使用 "/this/should/not/exist" 等绝对路径，因为它在 Windows 会解读为当前盘根，
+        // 且在以 root 运行的 Unix CI 上可能反而能创建成功。
+        let base = std::env::temp_dir().join(format!("ais-doctor-blocker-{}", std::process::id()));
+        std::fs::create_dir_all(&base).unwrap();
+        let blocker = base.join("not-a-dir");
+        std::fs::write(&blocker, b"x").unwrap();
+        let bogus_root = blocker.join("sub");
+
+        let item = check_root_writable(&bogus_root);
+
+        std::fs::remove_dir_all(&base).ok();
         assert!(matches!(item.status, Status::Fail));
     }
 
