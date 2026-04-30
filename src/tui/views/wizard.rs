@@ -24,11 +24,14 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap};
 
 use crate::catalog::Provider;
+use crate::credentials::{self, Key};
 use crate::error::Error;
 use crate::http;
 use crate::profile::{self, CreateInput};
 use crate::settings::Settings;
 use crate::tui::app::{App, Mode};
+use crate::tui::views::keys::KeyForm;
+use crate::tui::views::providers::ProviderForm;
 use crate::tui::widgets::{InputField, Toast};
 
 /// 向导整体状态。
@@ -55,6 +58,11 @@ pub struct State {
     pub model_fetch_attempted: bool,
     /// 用户选了"+ 自定义..." 或 fetch 失败/空 → 走自由输入子状态。
     pub model_use_custom: bool,
+    /// Step 1 末位 "+ 添加新 provider..." 触发的内联子表单。
+    /// `Box` 与 `Mode::Wizard(Box<State>)` 同源：避免 `[InputField; 5]` 把 enum 撑大。
+    pub provider_form: Option<Box<ProviderForm>>,
+    /// Step 2 末位 "+ 添加新 key..." 触发的内联子表单。同样 `Box`。
+    pub key_form: Option<Box<KeyForm>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -89,13 +97,18 @@ impl Default for State {
             model_choices: Vec::new(),
             model_fetch_attempted: false,
             model_use_custom: false,
+            provider_form: None,
+            key_form: None,
         }
     }
 }
 
 impl State {
     pub fn is_in_input_mode(&self) -> bool {
+        // 子表单也要算"输入态"（屏蔽 ?/q 等全局快捷键）。
         matches!(self.step, Step::Model | Step::Name)
+            || self.provider_form.is_some()
+            || self.key_form.is_some()
     }
 
     /// 进入编辑流：从 `app.index` + `app.credentials` 把 entry 完整反向填回，
@@ -139,6 +152,28 @@ impl State {
 }
 
 pub fn handle_key(app: &mut App, k: KeyEvent) {
+    // 子表单优先级最高：只要 provider_form / key_form 任一存在就独占事件，
+    // 不再分派到 step handler，避免父级 step 的 Esc/Enter 提前清状态。
+    let subform = match &app.mode {
+        Mode::Wizard(s) => {
+            if s.provider_form.is_some() {
+                Some(SubformKind::Provider)
+            } else if s.key_form.is_some() {
+                Some(SubformKind::Key)
+            } else {
+                None
+            }
+        }
+        _ => return,
+    };
+    if let Some(kind) = subform {
+        match kind {
+            SubformKind::Provider => handle_provider_subform_key(app, k),
+            SubformKind::Key => handle_key_subform_key(app, k),
+        }
+        return;
+    }
+
     let step = match &app.mode {
         Mode::Wizard(s) => s.step,
         _ => return,
@@ -150,6 +185,12 @@ pub fn handle_key(app: &mut App, k: KeyEvent) {
         Step::Name => handle_step_name(app, k),
         Step::Preview => handle_step_preview(app, k),
     }
+}
+
+#[derive(Clone, Copy)]
+enum SubformKind {
+    Provider,
+    Key,
 }
 
 fn back_to_profiles(app: &mut App) {
@@ -190,8 +231,10 @@ fn handle_step_provider(app: &mut App, k: KeyEvent) {
                     state.key_list.select(Some(0));
                 }
             } else {
-                // 末位 "+ 添加新 provider..."：Task 13 接入子流程
-                app.set_toast(Toast::info("add-provider 子流程将在 Task 13 接入"));
+                // 末位 "+ 添加新 provider..." → 打开内联子表单。
+                if let Mode::Wizard(state) = &mut app.mode {
+                    state.provider_form = Some(Box::new(ProviderForm::new_add()));
+                }
             }
         }
         _ => {}
@@ -287,7 +330,12 @@ fn handle_step_key(app: &mut App, k: KeyEvent) {
                     }
                 }
             } else {
-                app.set_toast(Toast::info("add-key 子流程将在 Task 13 接入"));
+                // 末位 "+ 添加新 key..." → 打开内联子表单，预填 provider id。
+                if let Mode::Wizard(state) = &mut app.mode {
+                    let mut form = KeyForm::new_add();
+                    form.provider = InputField::new("provider").with_initial(&provider_id);
+                    state.key_form = Some(Box::new(form));
+                }
             }
         }
         _ => {}
@@ -547,10 +595,279 @@ fn snapshot_for_commit(s: &State) -> Result<CommitSnapshot, Error> {
     })
 }
 
+/// add-provider 子表单 enter 后的处理结果。把 IO 推迟到借用作用域之外。
+enum ProviderSubformOutcome {
+    Stay,
+    Cancel,
+    Submit { id: String, body: String },
+    InvalidForm(Error),
+}
+
+/// add-provider 子表单：spec §7 Step 1 末位"+ 添加新 provider..." 唯一入口。
+///
+/// 借用模型与 wizard 内其他 step handler 一致：
+/// 1. 短借用 `&mut app.mode`，让纯字段编辑（push/pop/focus）就地完成；
+/// 2. 用 `Outcome` 把"提交/取消"等需要 `&mut app` 的副作用带出借用；
+/// 3. 离开作用域后做 IO（write_user_provider / reload_providers / set_toast）。
+fn handle_provider_subform_key(app: &mut App, k: KeyEvent) {
+    let outcome = {
+        let Mode::Wizard(state) = &mut app.mode else {
+            return;
+        };
+        let Some(form) = state.provider_form.as_deref_mut() else {
+            return;
+        };
+        match k.code {
+            KeyCode::Esc => ProviderSubformOutcome::Cancel,
+            KeyCode::Tab => {
+                form.focus = (form.focus + 1) % form.fields.len();
+                ProviderSubformOutcome::Stay
+            }
+            KeyCode::BackTab => {
+                let n = form.fields.len();
+                form.focus = (form.focus + n - 1) % n;
+                ProviderSubformOutcome::Stay
+            }
+            KeyCode::Backspace => {
+                form.fields[form.focus].pop();
+                ProviderSubformOutcome::Stay
+            }
+            KeyCode::Enter => {
+                if form.focus + 1 < form.fields.len() {
+                    form.focus += 1;
+                    ProviderSubformOutcome::Stay
+                } else {
+                    match form.to_toml_section() {
+                        Ok((id, body)) => ProviderSubformOutcome::Submit { id, body },
+                        Err(e) => ProviderSubformOutcome::InvalidForm(e),
+                    }
+                }
+            }
+            KeyCode::Char(c) => {
+                form.fields[form.focus].push(c);
+                ProviderSubformOutcome::Stay
+            }
+            _ => ProviderSubformOutcome::Stay,
+        }
+    };
+
+    match outcome {
+        ProviderSubformOutcome::Stay => {}
+        ProviderSubformOutcome::Cancel => {
+            if let Mode::Wizard(state) = &mut app.mode {
+                state.provider_form = None;
+            }
+        }
+        ProviderSubformOutcome::InvalidForm(e) => {
+            // 表单字段保留，由用户修正后再次回车。
+            app.set_toast(Toast::error(format!("invalid: {e}")));
+        }
+        ProviderSubformOutcome::Submit { id, body } => {
+            if let Err(e) =
+                crate::tui::views::providers::write_user_provider(&app.paths, &id, &body)
+            {
+                app.set_toast(Toast::error(format!("save failed: {e}")));
+                return;
+            }
+            if let Err(e) = app.reload_providers() {
+                app.set_toast(Toast::error(format!("reload failed: {e}")));
+                return;
+            }
+            // reload 已经把 app.providers 刷新到最新；在重借用 state 之前先定位新 provider。
+            let new_idx = app.providers.iter().position(|p| p.id == id);
+            if let Mode::Wizard(state) = &mut app.mode {
+                if let Some(idx) = new_idx {
+                    state.provider_list.select(Some(idx));
+                    state.picked_provider = Some(app.providers[idx].clone());
+                    // 自动推进到 Step::Key，省去用户再按一次 Enter。
+                    state.step = Step::Key;
+                    state.key_list.select(Some(0));
+                }
+                state.provider_form = None;
+            }
+            app.set_toast(Toast::success(format!("provider `{id}` created")));
+        }
+    }
+}
+
+/// add-key 子表单 enter 后的处理结果。提交时携带 owned 字段，避免重借用 form。
+enum KeySubformOutcome {
+    Stay,
+    Cancel,
+    Submit {
+        provider_id: String,
+        value: String,
+        id_override: String,
+        note: String,
+    },
+}
+
+/// add-key 子表单：spec §7 Step 2 末位"+ 添加新 key..." 唯一入口。
+///
+/// 与 keys.rs 的 `commit_key_form` 路径**有意分离**——本路径是新建场景：
+/// - 没有 `editing` 旧 id 需要 rename；
+/// - 没有引用此 key 的 profile，所以不调 `profile::rotate_key`；
+/// - 提交成功后转场到 `Step::Model`，并且把 `model_use_custom = true` —— 新 key 通常
+///   尚未授权调用 `/v1/models`，跳过 fetch 直接走自由输入更稳妥（spec §16）。
+fn handle_key_subform_key(app: &mut App, k: KeyEvent) {
+    let outcome = {
+        let Mode::Wizard(state) = &mut app.mode else {
+            return;
+        };
+        let Some(form) = state.key_form.as_deref_mut() else {
+            return;
+        };
+        match k.code {
+            KeyCode::Esc => KeySubformOutcome::Cancel,
+            KeyCode::Tab => {
+                form.focus = (form.focus + 1) % 4;
+                KeySubformOutcome::Stay
+            }
+            KeyCode::BackTab => {
+                form.focus = (form.focus + 3) % 4;
+                KeySubformOutcome::Stay
+            }
+            KeyCode::Backspace => {
+                focused_field_mut(form).pop();
+                KeySubformOutcome::Stay
+            }
+            KeyCode::Enter => {
+                if form.focus + 1 < 4 {
+                    form.focus += 1;
+                    KeySubformOutcome::Stay
+                } else {
+                    KeySubformOutcome::Submit {
+                        provider_id: form.provider.value().trim().to_string(),
+                        value: form.value.value().to_string(),
+                        id_override: form.id_override.value().trim().to_string(),
+                        note: form.note.value().to_string(),
+                    }
+                }
+            }
+            KeyCode::Char(c) => {
+                focused_field_mut(form).push(c);
+                KeySubformOutcome::Stay
+            }
+            _ => KeySubformOutcome::Stay,
+        }
+    };
+
+    match outcome {
+        KeySubformOutcome::Stay => {}
+        KeySubformOutcome::Cancel => {
+            if let Mode::Wizard(state) = &mut app.mode {
+                state.key_form = None;
+            }
+        }
+        KeySubformOutcome::Submit {
+            provider_id,
+            value,
+            id_override,
+            note,
+        } => commit_key_subform(app, provider_id, value, id_override, note),
+    }
+}
+
+/// 把 add-key 子表单提交落盘并推进 wizard 到 Step::Model。
+///
+/// 错误路径（id 校验、auto id 失败、save 失败）下保留 form，由用户修正再试；
+/// 成功路径下清空 form、写 picked_key_*、复位 model 子状态。
+fn commit_key_subform(
+    app: &mut App,
+    provider_id: String,
+    value: String,
+    id_override: String,
+    note: String,
+) {
+    if provider_id.is_empty() {
+        app.set_toast(Toast::error("provider must not be empty"));
+        return;
+    }
+    if value.is_empty() {
+        app.set_toast(Toast::error("value must not be empty"));
+        return;
+    }
+
+    let existing: Vec<String> = app
+        .credentials
+        .by_provider
+        .get(&provider_id)
+        .map(|m| m.keys().cloned().collect())
+        .unwrap_or_default();
+    let new_id = if !id_override.is_empty() {
+        if let Err(e) = credentials::validate_id(&id_override) {
+            app.set_toast(Toast::error(e.to_string()));
+            return;
+        }
+        id_override
+    } else {
+        match credentials::unique_id(&value, &existing) {
+            Ok(id) => id,
+            Err(e) => {
+                app.set_toast(Toast::error(format!("auto id failed: {e}")));
+                return;
+            }
+        }
+    };
+
+    let map = app
+        .credentials
+        .by_provider
+        .entry(provider_id.clone())
+        .or_default();
+    map.insert(
+        new_id.clone(),
+        Key {
+            value: value.clone(),
+            note,
+        },
+    );
+    if let Err(e) = credentials::save(&app.paths.credentials(), &app.credentials) {
+        app.set_toast(Toast::error(format!("save failed: {e}")));
+        return;
+    }
+
+    if let Mode::Wizard(state) = &mut app.mode {
+        state.picked_key_id = Some(new_id.clone());
+        state.picked_key_value = Some(value);
+        state.key_form = None;
+        state.step = Step::Model;
+        // 新 key 通常无 fetch /v1/models 权限：跳过 Task 12 的 HTTP 路径，直接走自由输入。
+        state.model_choices.clear();
+        state.model_use_custom = true;
+        state.model_fetch_attempted = false;
+        state.model_list.select(Some(0));
+    }
+    app.set_toast(Toast::success(format!(
+        "key `{provider_id}/{new_id}` created"
+    )));
+}
+
+/// 按 KeyForm.focus 取对应字段的可变借用；与 keys.rs 内的 `KeyForm::focused_mut` 同义。
+/// 不在 KeyForm 上加 pub 方法，避免污染 keys.rs 模块对外 API。
+fn focused_field_mut(form: &mut KeyForm) -> &mut InputField {
+    match form.focus {
+        0 => &mut form.provider,
+        1 => &mut form.value,
+        2 => &mut form.id_override,
+        _ => &mut form.note,
+    }
+}
+
 pub fn draw(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let Mode::Wizard(state) = &app.mode else {
         return;
     };
+    // 子表单优先：把整块 area 让给 ProviderForm / KeyForm 的视觉，复用 providers.rs / keys.rs
+    // 已有的 draw_form_external 包装，避免本文件再维护一份相同的渲染代码。
+    if let Some(form) = state.provider_form.as_deref() {
+        crate::tui::views::providers::draw_form_external(frame, area, form);
+        return;
+    }
+    if let Some(form) = state.key_form.as_deref() {
+        crate::tui::views::keys::draw_form_external(frame, area, form);
+        return;
+    }
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([

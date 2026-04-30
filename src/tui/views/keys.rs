@@ -551,6 +551,12 @@ fn draw_form(frame: &mut Frame<'_>, area: Rect, form: &KeyForm) {
     frame.render_widget(p, area);
 }
 
+/// 给跨模块复用的薄包装：wizard.rs 的 add-key 子流程把整块 area 让给 `KeyForm`，
+/// 直接调用本函数即可拿到与 Keys 面板内联表单一致的外观。
+pub(crate) fn draw_form_external(frame: &mut Frame<'_>, area: Rect, form: &KeyForm) {
+    draw_form(frame, area, form);
+}
+
 fn field_line<'a>(field: &'a InputField, focused: bool) -> Line<'a> {
     let display = if field.mask {
         "*".repeat(field.buffer.chars().count())

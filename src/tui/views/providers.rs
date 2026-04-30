@@ -331,7 +331,14 @@ fn commit_active_form(app: &mut App) {
 /// 把一个 user provider 段写回 providers.toml：先删旧段再 append 新段。
 ///
 /// 使用按行扫描的 `strip_section`（而非 toml 重序列化），以保留用户手写注释。
-fn write_user_provider(paths: &crate::paths::Paths, id: &str, body: &str) -> Result<(), Error> {
+///
+/// `pub(crate)` 起：wizard.rs 的 add-provider 子流程会绕过本面板的 `commit_active_form`
+/// 直接调用此函数把新建段落落盘，然后驱动 `App::reload_providers` 同步内存视图。
+pub(crate) fn write_user_provider(
+    paths: &crate::paths::Paths,
+    id: &str,
+    body: &str,
+) -> Result<(), Error> {
     use std::fs;
 
     if let Some(parent) = paths.providers().parent() {
@@ -488,6 +495,12 @@ fn draw_form(frame: &mut Frame<'_>, area: Rect, form: &ProviderForm) {
         .wrap(Wrap { trim: false })
         .style(Style::default().fg(Color::White));
     frame.render_widget(p, area);
+}
+
+/// 给跨模块复用的薄包装：wizard.rs 的 add-provider 子流程把整块 area 让给
+/// `ProviderForm`，直接调用本函数即可拿到与 Providers 面板内联表单一致的外观。
+pub(crate) fn draw_form_external(frame: &mut Frame<'_>, area: Rect, form: &ProviderForm) {
+    draw_form(frame, area, form);
 }
 
 fn field_line<'a>(field: &'a InputField, focused: bool) -> Line<'a> {
